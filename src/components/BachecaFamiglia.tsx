@@ -2,13 +2,14 @@
 
 import { PlusIcon, TrashIcon } from '@heroicons/react/24/outline'
 import { useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
 
 interface PostIt {
   id: string
   message: string
   author: string
   color: string
-  timestamp: Date
+  created_at: string
 }
 
 const colors = [
@@ -29,64 +30,122 @@ export default function BachecaFamiglia() {
   const [newMessage, setNewMessage] = useState('')
   const [selectedAuthor, setSelectedAuthor] = useState(familyMembers[0])
   const [showForm, setShowForm] = useState(false)
+  const [loading, setLoading] = useState(true)
 
-  // Carica i post-it salvati
+  // Carica i post-it da Supabase
   useEffect(() => {
-    const saved = localStorage.getItem('famiglia-bacheca')
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved)
-        setPostits(parsed.map((p: any) => ({
-          ...p,
-          timestamp: new Date(p.timestamp)
-        })))
-      } catch (error) {
-        console.error('Errore nel caricamento dei post-it:', error)
-      }
+    loadPostits()
+    
+    // Subscription per real-time updates
+    const subscription = supabase
+      .channel('postits')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'postits' }, 
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            setPostits(prev => [payload.new as PostIt, ...prev])
+          } else if (payload.eventType === 'DELETE') {
+            setPostits(prev => prev.filter(p => p.id !== payload.old.id))
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      subscription.unsubscribe()
     }
   }, [])
 
-  // Salva i post-it
-  useEffect(() => {
-    localStorage.setItem('famiglia-bacheca', JSON.stringify(postits))
-  }, [postits])
+  const loadPostits = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('postits')
+        .select('*')
+        .order('created_at', { ascending: false })
 
-  const addPostIt = () => {
+      if (error) {
+        console.error('Errore nel caricamento post-it:', error)
+        return
+      }
+
+      setPostits(data || [])
+    } catch (error) {
+      console.error('Errore nel caricamento post-it:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const addPostIt = async () => {
     if (!newMessage.trim()) return
 
-    const newPostIt: PostIt = {
+    const newPostIt = {
       id: Date.now().toString(),
       message: newMessage,
       author: selectedAuthor,
-      color: colors[Math.floor(Math.random() * colors.length)],
-      timestamp: new Date()
+      color: colors[Math.floor(Math.random() * colors.length)]
     }
 
-    setPostits([...postits, newPostIt])
-    setNewMessage('')
-    setShowForm(false)
+    try {
+      const { error } = await supabase
+        .from('postits')
+        .insert([newPostIt])
 
-    // Simula notifica agli altri membri
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      new Notification(`Nuovo messaggio da ${selectedAuthor}`, {
-        body: newMessage.substring(0, 50) + (newMessage.length > 50 ? '...' : ''),
-        icon: '/icon-192x192.png'
-      })
+      if (error) {
+        console.error('Errore nell\'aggiunta post-it:', error)
+        return
+      }
+
+      setNewMessage('')
+      setShowForm(false)
+
+      // Notifica locale
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(`Nuovo messaggio da ${selectedAuthor}`, {
+          body: newMessage.substring(0, 50) + (newMessage.length > 50 ? '...' : ''),
+          icon: '/icon-192x192.png'
+        })
+      }
+    } catch (error) {
+      console.error('Errore nell\'aggiunta post-it:', error)
     }
   }
 
-  const deletePostIt = (id: string) => {
-    setPostits(postits.filter(p => p.id !== id))
+  const deletePostIt = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('postits')
+        .delete()
+        .eq('id', id)
+
+      if (error) {
+        console.error('Errore nell\'eliminazione post-it:', error)
+        return
+      }
+    } catch (error) {
+      console.error('Errore nell\'eliminazione post-it:', error)
+    }
   }
 
-  const formatTime = (timestamp: Date) => {
+  const formatTime = (timestamp: string) => {
+    const date = new Date(timestamp)
     const now = new Date()
-    const diff = now.getTime() - timestamp.getTime()
+    const diff = now.getTime() - date.getTime()
     const hours = Math.floor(diff / (1000 * 60 * 60))
     
     if (hours < 1) return 'Proprio ora'
     if (hours < 24) return `${hours}h fa`
-    return timestamp.toLocaleDateString('it-IT')
+    return date.toLocaleDateString('it-IT')
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-amber-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Caricamento bacheca...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -121,7 +180,7 @@ export default function BachecaFamiglia() {
                 
                 <div className="text-xs text-gray-600 border-t border-gray-400 pt-2">
                   <p className="font-semibold">{postit.author}</p>
-                  <p>{formatTime(postit.timestamp)}</p>
+                  <p>{formatTime(postit.created_at)}</p>
                 </div>
               </div>
 
@@ -135,6 +194,15 @@ export default function BachecaFamiglia() {
             </div>
           ))}
         </div>
+
+        {/* Messaggio vuoto */}
+        {postits.length === 0 && (
+          <div className="pt-16 flex items-center justify-center h-64">
+            <p className="text-white text-xl font-handwriting">
+              Ancora nessun messaggio. Aggiungi il primo! 📝
+            </p>
+          </div>
+        )}
 
         {/* Post-it vuoto per aggiungere */}
         <div className="fixed bottom-20 right-6 lg:absolute lg:bottom-8 lg:right-8">

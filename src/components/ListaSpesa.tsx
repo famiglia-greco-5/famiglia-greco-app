@@ -2,12 +2,13 @@
 
 import { CheckIcon, TrashIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
 
 interface ShoppingItem {
   id: number
   text: string
-  addedBy: string
-  timestamp: Date
+  added_by: string
+  created_at: string
   completed: boolean
 }
 
@@ -20,63 +21,133 @@ export default function ListaSpesa() {
     Array.from({ length: 20 }, (_, i) => ({
       id: i,
       text: '',
-      addedBy: '',
-      timestamp: new Date(),
+      added_by: '',
+      created_at: new Date().toISOString(),
       completed: false
     }))
   )
   const [selectedMember, setSelectedMember] = useState(familyMembers[0])
+  const [loading, setLoading] = useState(true)
 
-  // Carica la lista salvata
+  // Carica la lista da Supabase
   useEffect(() => {
-    const saved = localStorage.getItem('famiglia-lista-spesa')
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved)
-        setItems(parsed.map((item: any) => ({
-          ...item,
-          timestamp: new Date(item.timestamp)
-        })))
-      } catch (error) {
-        console.error('Errore nel caricamento della lista:', error)
-      }
+    loadShoppingItems()
+    
+    // Subscription per real-time updates
+    const subscription = supabase
+      .channel('shopping_items')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shopping_items' }, 
+        (payload) => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const newItem = payload.new as ShoppingItem
+            setItems(prev => {
+              const newItems = [...prev]
+              newItems[newItem.id] = newItem
+              return newItems
+            })
+          } else if (payload.eventType === 'DELETE') {
+            const deletedItem = payload.old as { id: number }
+            setItems(prev => {
+              const newItems = [...prev]
+              newItems[deletedItem.id] = {
+                id: deletedItem.id,
+                text: '',
+                added_by: '',
+                created_at: new Date().toISOString(),
+                completed: false
+              }
+              return newItems
+            })
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      subscription.unsubscribe()
     }
   }, [])
 
-  // Salva la lista
-  useEffect(() => {
-    localStorage.setItem('famiglia-lista-spesa', JSON.stringify(items))
-  }, [items])
+  const loadShoppingItems = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('shopping_items')
+        .select('*')
+        .order('id')
 
-  const updateItem = (id: number, text: string) => {
-    setItems(prev => prev.map(item => 
-      item.id === id 
-        ? { 
-            ...item, 
-            text, 
-            addedBy: text ? selectedMember : '',
-            timestamp: text ? new Date() : item.timestamp
-          }
-        : item
-    ))
+      if (error) {
+        console.error('Errore nel caricamento lista spesa:', error)
+        return
+      }
 
-    // Invia notifica se l'item è stato aggiunto
-    if (text && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      new Notification(`${selectedMember} ha aggiunto alla lista`, {
-        body: text,
-        icon: '/icon-192x192.png'
+      // Crea array con 20 elementi
+      const newItems = Array.from({ length: 20 }, (_, i) => {
+        const dbItem = data?.find(row => row.id === i)
+        return {
+          id: i,
+          text: dbItem?.text || '',
+          added_by: dbItem?.added_by || '',
+          created_at: dbItem?.created_at || new Date().toISOString(),
+          completed: dbItem?.completed || false
+        }
       })
+
+      setItems(newItems)
+    } catch (error) {
+      console.error('Errore nel caricamento lista spesa:', error)
+    } finally {
+      setLoading(false)
     }
   }
 
-  const clearItem = (id: number) => {
-    const item = items.find(i => i.id === id)
-    if (item?.text) {
-      setItems(prev => prev.map(item => 
-        item.id === id 
-          ? { ...item, text: '', addedBy: '', completed: false }
-          : item
-      ))
+  const updateItem = async (id: number, text: string) => {
+    try {
+      if (text.trim()) {
+        // Inserisci o aggiorna elemento
+        const { error } = await supabase
+          .from('shopping_items')
+          .upsert({
+            id,
+            text: text.trim(),
+            added_by: selectedMember,
+            completed: false
+          })
+
+        if (error) {
+          console.error('Errore nell\'aggiornamento elemento:', error)
+          return
+        }
+
+        // Notifica locale
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          new Notification(`${selectedMember} ha aggiunto alla lista`, {
+            body: text.trim(),
+            icon: '/icon-192x192.png'
+          })
+        }
+      } else {
+        // Rimuovi elemento vuoto
+        await clearItem(id)
+      }
+    } catch (error) {
+      console.error('Errore nell\'aggiornamento elemento:', error)
+    }
+  }
+
+  const clearItem = async (id: number) => {
+    const item = items[id]
+    if (!item?.text) return
+
+    try {
+      const { error } = await supabase
+        .from('shopping_items')
+        .delete()
+        .eq('id', id)
+
+      if (error) {
+        console.error('Errore nella cancellazione elemento:', error)
+        return
+      }
 
       // Notifica cancellazione
       if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
@@ -85,50 +156,81 @@ export default function ListaSpesa() {
           icon: '/icon-192x192.png'
         })
       }
+    } catch (error) {
+      console.error('Errore nella cancellazione elemento:', error)
     }
   }
 
-  const toggleComplete = (id: number) => {
-    const item = items.find(i => i.id === id)
-    if (item?.text) {
-      setItems(prev => prev.map(item => 
-        item.id === id 
-          ? { ...item, completed: !item.completed }
-          : item
-      ))
+  const toggleComplete = async (id: number) => {
+    const item = items[id]
+    if (!item?.text) return
+
+    try {
+      const { error } = await supabase
+        .from('shopping_items')
+        .update({ completed: !item.completed })
+        .eq('id', id)
+
+      if (error) {
+        console.error('Errore nel toggle completamento:', error)
+        return
+      }
+    } catch (error) {
+      console.error('Errore nel toggle completamento:', error)
     }
   }
 
-  const clearAll = () => {
-    if (typeof window !== 'undefined' && window.confirm('🗑️ Sei sicuro di voler cancellare tutta la lista?')) {
-      setItems(prev => prev.map(item => ({
-        ...item,
-        text: '',
-        addedBy: '',
-        completed: false
-      })))
+  const clearAll = async () => {
+    if (typeof window !== 'undefined' && !window.confirm('🗑️ Sei sicuro di voler cancellare tutta la lista?')) {
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from('shopping_items')
+        .delete()
+        .neq('id', -1) // Elimina tutti
+
+      if (error) {
+        console.error('Errore nello svuotamento lista:', error)
+        return
+      }
 
       if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
         new Notification(`${selectedMember} ha svuotato la lista della spesa`, {
           icon: '/icon-192x192.png'
         })
       }
+    } catch (error) {
+      console.error('Errore nello svuotamento lista:', error)
     }
   }
 
   const activeItems = items.filter(item => item.text.trim())
   const completedCount = activeItems.filter(item => item.completed).length
 
-  const formatTime = (timestamp: Date) => {
+  const formatTime = (timestamp: string) => {
+    const date = new Date(timestamp)
     const now = new Date()
-    const diff = now.getTime() - timestamp.getTime()
+    const diff = now.getTime() - date.getTime()
     const minutes = Math.floor(diff / (1000 * 60))
     const hours = Math.floor(diff / (1000 * 60 * 60))
     
     if (minutes < 1) return 'ora'
     if (minutes < 60) return `${minutes}m fa`
     if (hours < 24) return `${hours}h fa`
-    return timestamp.toLocaleDateString('it-IT')
+    return date.toLocaleDateString('it-IT')
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Caricamento lista spesa...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -147,7 +249,7 @@ export default function ListaSpesa() {
             <select
               value={selectedMember}
               onChange={(e) => setSelectedMember(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
             >
               {familyMembers.map(member => (
                 <option key={member} value={member}>👤 {member}</option>
@@ -174,7 +276,7 @@ export default function ListaSpesa() {
               item.completed ? 'border-l-gray-400 bg-gray-50 opacity-70' : 'border-l-green-500'
             } ${item.text ? 'hover:border-l-blue-500 hover:translate-x-1' : ''}`}>
               {/* Numero riga */}
-              <span className="flex-shrink-0 w-8 h-8 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-sm font-medium">
+              <span className="flex-shrink-0 w-8 h-8 bg-green-100 text-green-600 rounded-full flex items-center justify-center text-sm font-medium">
                 {index + 1}
               </span>
 
@@ -197,15 +299,16 @@ export default function ListaSpesa() {
                   type="text"
                   value={item.text}
                   onChange={(e) => updateItem(item.id, e.target.value)}
+                  onBlur={(e) => updateItem(item.id, e.target.value)}
                   placeholder={`Elemento ${index + 1}...`}
                   className={`w-full p-2 border-0 bg-transparent focus:outline-none text-lg ${
                     item.completed ? 'line-through text-gray-500' : 'text-gray-800'
                   }`}
                   maxLength={100}
                 />
-                {item.addedBy && (
+                {item.added_by && (
                   <p className="text-xs text-gray-500 mt-1">
-                    Aggiunto da {item.addedBy} • {formatTime(item.timestamp)}
+                    Aggiunto da {item.added_by} • {formatTime(item.created_at)}
                   </p>
                 )}
               </div>
@@ -224,8 +327,8 @@ export default function ListaSpesa() {
       </div>
 
       {/* Suggerimenti rapidi */}
-      <div className="bg-amber-50 rounded-lg p-4">
-        <h3 className="text-lg font-semibold text-amber-800 mb-3">💡 Suggerimenti rapidi</h3>
+      <div className="bg-green-50 rounded-lg p-4">
+        <h3 className="text-lg font-semibold text-green-800 mb-3">💡 Suggerimenti rapidi</h3>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {['Pane', 'Latte', 'Uova', 'Pasta', 'Pomodori', 'Formaggio', 'Carne', 'Frutta'].map(suggestion => (
             <button
@@ -236,7 +339,7 @@ export default function ListaSpesa() {
                   updateItem(emptySlot.id, suggestion)
                 }
               }}
-              className="px-3 py-2 bg-white hover:bg-amber-100 text-amber-700 rounded-lg text-sm transition-colors duration-200 border border-amber-200"
+              className="px-3 py-2 bg-white hover:bg-green-100 text-green-700 rounded-lg text-sm transition-colors duration-200 border border-green-200"
             >
               + {suggestion}
             </button>
