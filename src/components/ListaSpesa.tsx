@@ -1,0 +1,273 @@
+'use client'
+
+import { CheckIcon, TrashIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { useEffect, useState } from 'react'
+
+interface ShoppingItem {
+  id: number
+  text: string
+  addedBy: string
+  timestamp: Date
+  completed: boolean
+}
+
+const familyMembers = [
+  'Matteo', 'Bea', 'Giuseppe', 'Michela'
+]
+
+export default function ListaSpesa() {
+  const [items, setItems] = useState<ShoppingItem[]>(
+    Array.from({ length: 20 }, (_, i) => ({
+      id: i,
+      text: '',
+      addedBy: '',
+      timestamp: new Date(),
+      completed: false
+    }))
+  )
+  const [selectedMember, setSelectedMember] = useState(familyMembers[0])
+
+  // Carica la lista salvata
+  useEffect(() => {
+    const saved = localStorage.getItem('famiglia-lista-spesa')
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved)
+        setItems(parsed.map((item: any) => ({
+          ...item,
+          timestamp: new Date(item.timestamp)
+        })))
+      } catch (error) {
+        console.error('Errore nel caricamento della lista:', error)
+      }
+    }
+  }, [])
+
+  // Salva la lista
+  useEffect(() => {
+    localStorage.setItem('famiglia-lista-spesa', JSON.stringify(items))
+  }, [items])
+
+  const updateItem = (id: number, text: string) => {
+    setItems(prev => prev.map(item => 
+      item.id === id 
+        ? { 
+            ...item, 
+            text, 
+            addedBy: text ? selectedMember : '',
+            timestamp: text ? new Date() : item.timestamp
+          }
+        : item
+    ))
+
+    // Invia notifica se l'item è stato aggiunto
+    if (text && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification(`${selectedMember} ha aggiunto alla lista`, {
+        body: text,
+        icon: '/icon-192x192.png'
+      })
+    }
+  }
+
+  const clearItem = (id: number) => {
+    const item = items.find(i => i.id === id)
+    if (item?.text) {
+      setItems(prev => prev.map(item => 
+        item.id === id 
+          ? { ...item, text: '', addedBy: '', completed: false }
+          : item
+      ))
+
+      // Notifica cancellazione
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(`${selectedMember} ha rimosso dalla lista`, {
+          body: item.text,
+          icon: '/icon-192x192.png'
+        })
+      }
+    }
+  }
+
+  const toggleComplete = (id: number) => {
+    const item = items.find(i => i.id === id)
+    if (item?.text) {
+      setItems(prev => prev.map(item => 
+        item.id === id 
+          ? { ...item, completed: !item.completed }
+          : item
+      ))
+    }
+  }
+
+  const clearAll = () => {
+    if (typeof window !== 'undefined' && window.confirm('🗑️ Sei sicuro di voler cancellare tutta la lista?')) {
+      setItems(prev => prev.map(item => ({
+        ...item,
+        text: '',
+        addedBy: '',
+        completed: false
+      })))
+
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(`${selectedMember} ha svuotato la lista della spesa`, {
+          icon: '/icon-192x192.png'
+        })
+      }
+    }
+  }
+
+  const activeItems = items.filter(item => item.text.trim())
+  const completedCount = activeItems.filter(item => item.completed).length
+
+  const formatTime = (timestamp: Date) => {
+    const now = new Date()
+    const diff = now.getTime() - timestamp.getTime()
+    const minutes = Math.floor(diff / (1000 * 60))
+    const hours = Math.floor(diff / (1000 * 60 * 60))
+    
+    if (minutes < 1) return 'ora'
+    if (minutes < 60) return `${minutes}m fa`
+    if (hours < 24) return `${hours}h fa`
+    return timestamp.toLocaleDateString('it-IT')
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header con statistiche */}
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-800">🛒 Lista della Spesa</h2>
+            <p className="text-gray-600">
+              {activeItems.length} elementi • {completedCount} completati
+            </p>
+          </div>
+          
+          <div className="flex flex-col sm:flex-row gap-3">
+            <select
+              value={selectedMember}
+              onChange={(e) => setSelectedMember(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+            >
+              {familyMembers.map(member => (
+                <option key={member} value={member}>👤 {member}</option>
+              ))}
+            </select>
+            
+            <button
+              onClick={clearAll}
+              disabled={activeItems.length === 0}
+              className="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:bg-gray-300 text-white rounded-lg transition-colors duration-200 flex items-center space-x-2"
+            >
+              <TrashIcon className="w-5 h-5" />
+              <span>Cancella tutto</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Lista degli elementi */}
+      <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+        <div className="divide-y divide-gray-200">
+          {items.map((item, index) => (
+            <div key={item.id} className={`p-4 flex items-center space-x-4 bg-white border-l-4 transition-all duration-300 hover:bg-gray-50 ${
+              item.completed ? 'border-l-gray-400 bg-gray-50 opacity-70' : 'border-l-green-500'
+            } ${item.text ? 'hover:border-l-blue-500 hover:translate-x-1' : ''}`}>
+              {/* Numero riga */}
+              <span className="flex-shrink-0 w-8 h-8 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-sm font-medium">
+                {index + 1}
+              </span>
+
+              {/* Checkbox */}
+              <button
+                onClick={() => toggleComplete(item.id)}
+                disabled={!item.text}
+                className={`flex-shrink-0 w-6 h-6 rounded border-2 transition-colors duration-200 flex items-center justify-center ${
+                  item.completed
+                    ? 'bg-green-500 border-green-500 text-white'
+                    : 'border-gray-300 hover:border-green-500'
+                } ${!item.text ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+              >
+                {item.completed && <CheckIcon className="w-4 h-4" />}
+              </button>
+
+              {/* Input */}
+              <div className="flex-1">
+                <input
+                  type="text"
+                  value={item.text}
+                  onChange={(e) => updateItem(item.id, e.target.value)}
+                  placeholder={`Elemento ${index + 1}...`}
+                  className={`w-full p-2 border-0 bg-transparent focus:outline-none text-lg ${
+                    item.completed ? 'line-through text-gray-500' : 'text-gray-800'
+                  }`}
+                  maxLength={100}
+                />
+                {item.addedBy && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Aggiunto da {item.addedBy} • {formatTime(item.timestamp)}
+                  </p>
+                )}
+              </div>
+
+              {/* Pulsante cancella */}
+              <button
+                onClick={() => clearItem(item.id)}
+                disabled={!item.text}
+                className="flex-shrink-0 p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-full transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Suggerimenti rapidi */}
+      <div className="bg-amber-50 rounded-lg p-4">
+        <h3 className="text-lg font-semibold text-amber-800 mb-3">💡 Suggerimenti rapidi</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {['Pane', 'Latte', 'Uova', 'Pasta', 'Pomodori', 'Formaggio', 'Carne', 'Frutta'].map(suggestion => (
+            <button
+              key={suggestion}
+              onClick={() => {
+                const emptySlot = items.find(item => !item.text)
+                if (emptySlot) {
+                  updateItem(emptySlot.id, suggestion)
+                }
+              }}
+              className="px-3 py-2 bg-white hover:bg-amber-100 text-amber-700 rounded-lg text-sm transition-colors duration-200 border border-amber-200"
+            >
+              + {suggestion}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Pulsante geolocalizzazione (per demo) */}
+      <div className="fixed bottom-20 left-6 lg:absolute lg:bottom-8 lg:left-8">
+        <button
+          onClick={() => {
+            if (typeof window !== 'undefined' && navigator.geolocation) {
+              navigator.geolocation.getCurrentPosition(
+                (position) => {
+                  // Simula notifica supermercato vicino
+                  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted' && activeItems.length > 0) {
+                    new Notification('🏪 Supermercato nelle vicinanze!', {
+                      body: `Hai ${activeItems.length} elementi nella lista`,
+                      icon: '/icon-192x192.png'
+                    })
+                  }
+                },
+                () => console.log('Geolocalizzazione negata')
+              )
+            }
+          }}
+          className="bg-blue-500 hover:bg-blue-600 text-white p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-110"
+        >
+          📍
+        </button>
+      </div>
+    </div>
+  )
+}
